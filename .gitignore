@@ -1,0 +1,23 @@
+# Build artifacts
+*.o
+*.d
+*.a
+*.so
+build/
+
+# Binaries
+daemon/ioschedd
+examples/temp_monitor
+examples/led_controller
+examples/motor_driver
+bench/sched_bench
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OMC
+.omc/
