@@ -2,6 +2,7 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
+#include <termios.h>
 
 // Frame makers
 #define UART_SOF        0xAA
@@ -24,15 +25,30 @@
 #define STATUS_ERR_CRC          0x03
 #define STATUS_ERR_DEV_TIMEOUT  0x04
 
-// Frame structure
+/** UART frame: 8-byte fixed-size packet for serial communication */
 typedef struct __attribute__((packed)) {
+    /** Start of frame (UART_SOF: 0xAA) */
     uint8_t sof;
+    /** Sequence number */
     uint8_t seq;
+    /** Command code (CMD_READ, CMD_WRITE, ...) */
     uint8_t cmd;
+    /** Target device ID */
     uint8_t dev;
+    /** Command-specific data */
     uint16_t payload;
+    /** CRC-8 checksum (over seq, cmd, dev, payload) */
     uint8_t crc;
+    /** End of frame (UART_EOF: 0x55) */
     uint8_t eof;
 } uart_frame_t;
+
+/** Serial port context: holds fd and original termios for restoration */
+typedef struct {
+    /** Serial port file descriptor */
+    int fd;
+    /** Original termios saved on open */
+    struct termios orig;
+} serial_ctx_t;
 
 #endif /* PROTOCOL_H */

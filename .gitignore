@@ -18,6 +18,7 @@ bench/sched_bench
 *~
 .vscode/
 .idea/
+compile_flags.txt
 
 # OMC
 .omc/
