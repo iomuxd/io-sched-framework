@@ -1,7 +1,19 @@
 #ifndef SERIAL_H
 #define SERIAL_H
 
+#include <termios.h>
+#include <stdint.h>
 #include <iosched/protocol.h>
+
+/** Serial port context: holds fd and original termios for restoration */
+typedef struct {
+    /** Serial port file descriptor */
+    int fd;
+    /** Original termios saved on open */
+    struct termios orig;
+    /** Frame sequence number, auto-incremented on each send */
+    uint8_t seq;
+} serial_ctx_t;
 
 // Serial port functions
 int serial_open(serial_ctx_t *ctx, const char *port, int baudrate);

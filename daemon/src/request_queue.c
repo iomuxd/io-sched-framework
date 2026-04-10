@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "daemon/request_queue.h"
 
+/* Initialize an empty queue with the given capacity limit. */
 int rq_init(request_queue_t *q, size_t cap) {
     q->head = NULL;
     q->tail = NULL;
@@ -11,6 +12,7 @@ int rq_init(request_queue_t *q, size_t cap) {
     return 0;
 }
 
+/* Free all nodes and their requests, reset queue to empty state. */
 void rq_destroy(request_queue_t *q) {
     rq_node_t *node = q->head;
 
@@ -26,6 +28,7 @@ void rq_destroy(request_queue_t *q) {
     q->len  = 0;
 }
 
+/* Append request to tail. Stamps arrive_ts with CLOCK_MONOTONIC. */
 int rq_push(request_queue_t *q, io_request_t *req) {
     if (rq_full(q))
         return -1;
@@ -53,6 +56,7 @@ int rq_push(request_queue_t *q, io_request_t *req) {
     return 0;
 }
 
+/* Remove and return the head request. Caller owns the returned pointer. */
 io_request_t *rq_pop(request_queue_t *q) {
     rq_node_t *node = q->head;
     if (!node)
@@ -65,10 +69,12 @@ io_request_t *rq_pop(request_queue_t *q) {
     return req;
 }
 
+/* Return the head node without removing it. */
 rq_node_t *rq_peek(const request_queue_t *q) {
     return q->head;
 }
 
+/* Unlink an arbitrary node from the queue. Does not free the node. */
 void rq_remove(request_queue_t *q, rq_node_t *node) {
     if (q->head == node && q->tail == node) {
         q->head = NULL;
@@ -89,6 +95,7 @@ void rq_remove(request_queue_t *q, rq_node_t *node) {
     q->len--;
 }
 
+/* Remove and free all requests belonging to a given client ID. */
 void rq_remove_by_cid(request_queue_t *q, uint8_t cid) {
     rq_node_t *node = q->head;
 

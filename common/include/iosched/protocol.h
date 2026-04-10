@@ -2,7 +2,6 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
-#include <termios.h>
 
 // Frame makers
 #define UART_SOF        0xAA
@@ -42,13 +41,5 @@ typedef struct __attribute__((packed)) {
     /** End of frame (UART_EOF: 0x55) */
     uint8_t eof;
 } uart_frame_t;
-
-/** Serial port context: holds fd and original termios for restoration */
-typedef struct {
-    /** Serial port file descriptor */
-    int fd;
-    /** Original termios saved on open */
-    struct termios orig;
-} serial_ctx_t;
 
 #endif /* PROTOCOL_H */
