@@ -158,12 +158,16 @@ int serial_recv(serial_ctx_t *ctx, uart_frame_t *frame, int timeout_ms) {
         remaining -= n;
     }
 
-    /* Validate frame integrity: EOF marker and CRC */
+    /* Validate frame integrity: EOF marker, CRC, and sequence number */
     if (frame->eof != UART_EOF)
         return -1;
 
     uint8_t calc_crc = crc8_calc(&frame->seq, 5);
     if (frame->crc != calc_crc)
+        return -1;
+
+    uint8_t expected_seq = (uint8_t)(ctx->seq - 1);
+    if (frame->seq != expected_seq)
         return -1;
 
     return 0;
