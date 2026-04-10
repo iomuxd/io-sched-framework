@@ -49,6 +49,8 @@ typedef struct {
     int fd;
     /** Original termios saved on open */
     struct termios orig;
+    /** Frame sequence number, auto-incremented on each send */
+    uint8_t seq;
 } serial_ctx_t;
 
 #endif /* PROTOCOL_H */

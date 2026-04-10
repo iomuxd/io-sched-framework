@@ -49,6 +49,7 @@ int serial_open(serial_ctx_t *ctx, const char *port, int baudrate) {
 
     /* Save original termios for restoration on close */
     ctx->fd = fd;
+    ctx->seq = 0;
     int tc = tcgetattr(fd, &ctx->orig);
     if (tc < 0) {
         close(fd);
@@ -107,6 +108,7 @@ void serial_close(serial_ctx_t *ctx) {
 int serial_send(serial_ctx_t *ctx, uart_frame_t *frame) {
     /* Fill frame markers and CRC (caller's frame is modified in-place) */
     frame->sof = UART_SOF;
+    frame->seq = ctx->seq++;
     frame->eof = UART_EOF;
     frame->crc = crc8_calc(&frame->seq, 5);
 
