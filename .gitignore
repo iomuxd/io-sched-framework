@@ -19,6 +19,7 @@ bench/sched_bench
 .vscode/
 .idea/
 compile_flags.txt
+CLAUDE.md
 
 # OMC
 .omc/
