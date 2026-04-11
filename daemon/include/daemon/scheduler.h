@@ -8,6 +8,7 @@
 
 /* Scheduling policy vtable — set once at daemon startup, immutable thereafter */
 typedef struct {
+    uint8_t id;
     const char *name;
     int  (*init)(void *ctx);
     void (*destroy)(void *ctx);

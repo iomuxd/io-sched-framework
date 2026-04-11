@@ -1,16 +1,22 @@
+#include <poll.h>
+#include <time.h>
+#include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/un.h>
 #include <sys/socket.h>
 #include "iosched/types.h"
+#include "daemon/request_queue.h"
 #include "daemon/client_handler.h"
 
 int ch_init(client_handler_t *ch, scheduler_t *sched) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        ch->clients[i].fd = -1;
+        ch->clients[i].fd  = -1;
         ch->clients[i].cid = 0;
     }
     ch->client_cnt = 0;
+    ch->next_cid   = 0;
 
     ch->sched = sched;
 
@@ -40,79 +46,182 @@ int ch_init(client_handler_t *ch, scheduler_t *sched) {
 }
 
 void ch_destroy(client_handler_t *ch) {
-    /* 1. 연결된 모든 클라이언트에 대해 ch_disconnect 호출 */
-
-    /* 2. listen_fd close */
-
-    /* 3. 소켓 파일 unlink (IPC_SOCKET_PATH) */
-
-    /* 4. listen_fd = -1 로 무효화 */
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        ch_disconnect(ch, i);
+    close(ch->listen_fd);
+    unlink(IPC_SOCKET_PATH);
+    ch->listen_fd = -1;
 }
 
 int ch_accept(client_handler_t *ch) {
-    /* 1. accept()로 새 연결 수락 → client_fd 획득 */
-    
+    int client_fd = accept(ch->listen_fd, NULL, NULL);
+    if (client_fd < 0)
+        return -1;
 
-    /* 2. 클라이언트 수 MAX_CLIENTS 초과 확인 → 초과 시 fd close 후 에러 반환 */
+    if (ch->client_cnt >= MAX_CLIENTS) {
+        close(client_fd);
+        return -1;
+    }
 
-    /* 3. 클라이언트 테이블에서 빈 슬롯(fd == -1) 탐색 */
+    int free_idx = -1;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (ch->clients[i].fd == -1) {
+            free_idx = i;
+            break;
+        }
+    }
+    if (free_idx == -1) {
+        close(client_fd);
+        return -1;
+    }
 
-    /* 4. 슬롯에 fd 저장, cid 할당 (슬롯 인덱스 + 1 등), client_cnt 증가 */
+    ch->clients[free_idx].fd  = client_fd;
+    ch->clients[free_idx].cid = ++ch->next_cid;
+    ch->client_cnt++;
 
-    /* 5. 성공 반환 (슬롯 인덱스) */
+    return free_idx;
 }
 
 void ch_disconnect(client_handler_t *ch, int idx) {
-    /* 1. idx 범위 및 슬롯 유효성(fd != -1) 검증 */
+    if (idx < 0 || idx >= MAX_CLIENTS)
+        return;
 
-    /* 2. 해당 클라이언트의 대기 요청 제거 — rq_remove_by_cid(cid) */
+    if (ch->clients[idx].fd == -1)
+        return;
 
-    /* 3. 클라이언트 소켓 close */
+    rq_remove_by_cid(&ch->sched->queue, ch->clients[idx].cid);
 
-    /* 4. 슬롯 초기화 (fd=-1, cid=0, app_name 클리어) */
+    close(ch->clients[idx].fd);
 
-    /* 5. client_cnt 감소 */
+    ch->clients[idx].fd = -1;
+    ch->clients[idx].cid = 0;
+    memset(ch->clients[idx].app_name, 0, sizeof(ch->clients[idx].app_name));
+
+    ch->client_cnt--;
 }
 
 int ch_handle_message(client_handler_t *ch, int idx) {
-    /* 1. 클라이언트 fd에서 ipc_header_t 먼저 read */
+    ipc_header_t header;
+    int fd = ch->clients[idx].fd;
+    ssize_t n = read(fd, &header, sizeof(header));
+    if (n <= 0) {
+        ch_disconnect(ch, idx);
+        return -1;
+    }
 
-    /* 2. header.type에 따라 분기:
-     *
-     *    IPC_CONNECT:
-     *      a. 나머지 바디(ipc_connect_t) read — app_name 추출
-     *      b. 슬롯의 app_name에 저장
-     *      c. ipc_connect_ack_t 응답 전송 (status=OK, cid 포함)
-     *
-     *    IPC_IO_REQUEST:
-     *      a. 나머지 바디(ipc_io_request_t) read
-     *      b. io_request_t 할당 + 필드 변환 (wire → internal)
-     *      c. sched_submit()으로 스케줄러에 제출
-     *      d. 큐 full 등 에러 시 즉시 ipc_io_response_t 에러 응답
-     *
-     *    IPC_DISCONNECT:
-     *      a. ch_disconnect() 호출
-     *
-     *    IPC_GET_STATUS:
-     *      a. scheduler 상태 수집 (policy, queue len, total_reqs 등)
-     *      b. ipc_status_report_t 응답 전송
-     *
-     *    그 외: 무시 또는 에러 응답
-     */
+    switch (header.type) {
+        case IPC_CONNECT: {
+            uint8_t name_len;
+            read(fd, &name_len, sizeof(name_len));
 
-    /* 3. read 실패(0 또는 -1) 시 — 클라이언트 비정상 종료로 간주, ch_disconnect */
+            if (name_len >= sizeof(ch->clients[idx].app_name))
+                name_len = sizeof(ch->clients[idx].app_name) - 1;
+
+            read(fd, ch->clients[idx].app_name, name_len);
+            ch->clients[idx].app_name[name_len] = '\0';
+
+            ipc_connect_ack_t ack;
+            ack.header.type = IPC_CONNECT_ACK;
+            ack.header.cid  = ch->clients[idx].cid;
+            ack.header.len  = sizeof(ack);
+            ack.status = IPC_STATUS_OK;
+
+            write(fd, &ack, sizeof(ack));
+            break;
+        }
+        case IPC_IO_REQUEST: {
+            uint32_t req_id;
+            uint8_t  cmd, dev, pri;
+            uint32_t deadline;
+            uint16_t payl_len;
+
+            read(fd, &req_id,    sizeof(req_id));
+            read(fd, &cmd,       sizeof(cmd));
+            read(fd, &dev,       sizeof(dev));
+            read(fd, &pri,       sizeof(pri));
+            read(fd, &deadline,  sizeof(deadline));
+            read(fd, &payl_len,  sizeof(payl_len));
+
+            io_request_t *ioreq = malloc(sizeof(io_request_t) + payl_len);
+            if (ioreq == NULL)
+                return -1;
+
+            if (payl_len > 0)
+                read(fd, ioreq->payload, payl_len);
+
+            ioreq->req_id      = req_id;
+            ioreq->cid         = header.cid;
+            ioreq->cmd         = cmd;
+            ioreq->dev         = dev;
+            ioreq->pri         = pri;
+            ioreq->deadline_ms = deadline;
+            ioreq->payl_len    = payl_len;
+            clock_gettime(CLOCK_MONOTONIC, &ioreq->arrive_ts);
+
+            if (sched_submit(ch->sched, ioreq) < 0) {
+                free(ioreq);
+                ipc_io_response_t err;
+                err.header.type = IPC_IO_RESPONSE;
+                err.header.cid  = header.cid;
+                err.header.len  = sizeof(err);
+                err.req_id = req_id;
+                err.status = IPC_STATUS_ERR_QUEUE_FULL;
+                err.payl_len = 0;
+                write(fd, &err, sizeof(err));
+                return -1;
+            }
+            break;
+        }
+        case IPC_DISCONNECT:
+            ch_disconnect(ch, idx);
+            break;
+        case IPC_GET_STATUS: {
+            ipc_status_report_t report;
+            report.header.type = IPC_STATUS_REPORT;
+            report.header.cid  = header.cid;
+            report.header.len  = sizeof(report);
+            report.pol         = ch->sched->policy.id;
+            report.q_len       = (uint8_t)rq_len(&ch->sched->queue);
+            report.total_reqs  = ch->sched->total_reqs;
+            report.c_cnt       = (uint8_t)ch->client_cnt;
+            report.avg_wait    = ch->sched->total_reqs > 0
+                ? (uint16_t)(ch->sched->total_wait_us / ch->sched->total_reqs / 1000) : 0;
+            write(fd, &report, sizeof(report));
+            break;
+        }
+        default:
+            break;
+    }
+
+    return 0;
 }
 
 int ch_poll(client_handler_t *ch) {
-    /* 1. pollfd 배열 구성 — [0]=listen_fd, [1..N]=활성 클라이언트 fd, 이벤트=POLLIN */
+    struct pollfd fds[1 + MAX_CLIENTS];
+    fds[0].fd     = ch->listen_fd;
+    fds[0].events = POLLIN;
 
-    /* 2. poll() 호출 (타임아웃은 호출자가 결정하도록 파라미터화 또는 -1 블로킹) */
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        fds[i + 1].fd     = ch->clients[i].fd;
+        fds[i + 1].events = POLLIN;
+    }
+    
+    int n = poll(fds, 1 + MAX_CLIENTS, -1);
 
-    /* 3. poll 에러 처리 — EINTR면 재시도, 그 외 에러 반환 */
+    if (n == -1) {
+        if (errno == EINTR)
+            return 0;
+        else
+            return -1;
+    }
 
-    /* 4. listen_fd에 이벤트 → ch_accept() 호출 */
+    if (fds[0].revents & POLLIN)
+        ch_accept(ch);
 
-    /* 5. 각 클라이언트 fd에 이벤트 → ch_handle_message() 호출 */
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (fds[i + 1].revents & POLLIN)
+            ch_handle_message(ch, i);
+    }
 
-    /* 6. 처리한 이벤트 수 반환 */
+    return n;
 }

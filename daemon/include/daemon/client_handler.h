@@ -20,6 +20,7 @@ typedef struct {
     int           listen_fd;
     client_t      clients[MAX_CLIENTS];
     size_t        client_cnt;
+    uint32_t      next_cid;
     scheduler_t  *sched;
 } client_handler_t;
 
