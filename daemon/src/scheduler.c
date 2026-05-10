@@ -2,6 +2,7 @@
 #include "daemon/scheduler.h"
 #include "iosched/protocol.h"
 #include "daemon/request_queue.h"
+#include "iosched/types.h"
 #include <time.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -29,16 +30,28 @@ static uart_frame_t build_frame(const io_request_t *req) {
     return frame;
 }
 
+static uint8_t uart_to_ipc_status(const uint8_t uart_status) {
+    switch (uart_status) {
+        case STATUS_OK:              return IPC_STATUS_OK;
+        case STATUS_ERR_UNKNOWN_DEV: return IPC_STATUS_ERR_UNKNOWN_DEV;
+        case STATUS_ERR_UNKNOWN_CMD: return IPC_STATUS_ERR_UNKNOWN_CMD;
+        case STATUS_ERR_DEV_TIMEOUT: return IPC_STATUS_ERR_DEV_TIMEOUT;
+        default:                     return IPC_STATUS_ERR_DEV_TIMEOUT;
+    }
+}
+
 /* Initialize scheduler: set up request queue, bind policy and serial context. */
 int sched_init(scheduler_t *sched, sched_policy_t policy,
                serial_ctx_t *serial, size_t queue_cap) {
     if (rq_init(&sched->queue, queue_cap) < 0)
         return -1;
 
-    sched->policy = policy;
-    sched->serial = serial;
-    sched->total_reqs = 0;
+    sched->policy        = policy;
+    sched->serial        = serial;
+    sched->total_reqs    = 0;
     sched->total_wait_us = 0;
+    sched->sink          = NULL;
+    sched->sink_ctx      = NULL;
 
     if (sched->policy.init != NULL) {
         if (sched->policy.init(sched->policy.ctx))
@@ -89,6 +102,15 @@ int sched_dispatch(scheduler_t *sched) {
         return -1;
     }
 
+    if (sched->sink) {
+        sched->sink(sched->sink_ctx,
+                    node->req->cid,
+                    node->req->req_id,
+                    uart_to_ipc_status(frame.cmd),
+                    (const uint8_t *)&frame.payload,
+                    2);
+    }
+
     /* Compute turnaround time: now − arrival (monotonic, microseconds) */
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -108,4 +130,9 @@ int sched_dispatch(scheduler_t *sched) {
     sched->total_wait_us += wait_us;
 
     return 0;
+}
+
+void sched_set_response_sink(scheduler_t *sched, response_sink_t sink, void *ctx) {
+    sched->sink = sink;
+    sched->sink_ctx = ctx;
 }

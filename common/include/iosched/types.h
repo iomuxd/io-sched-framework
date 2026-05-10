@@ -12,14 +12,19 @@
 #define IPC_GET_STATUS      0x20
 #define IPC_STATUS_REPORT   0x21
 
-// IPC status codes
+// IPC status codes (see docs/ipc-protocol-spec.md v0.3 §5.6)
+// Group prefix: 0x0X common, 0x1X device, 0x2X scheduling, 0x3X session
 #define IPC_STATUS_OK                   0x00
-#define IPC_STATUS_ERR_UNKNOWN_DEV      0x01
-#define IPC_STATUS_ERR_UNKNOWN_CMD      0x02
-#define IPC_STATUS_ERR_DEADLINE         0x03
-#define IPC_STATUS_ERR_DEV_TIMEOUT      0x04
-#define IPC_STATUS_ERR_QUEUE_FULL       0x05
-#define IPC_STATUS_ERR_INVALID_CLIENT   0x06
+// Device layer (UART-derived; converted via spec §8.2)
+#define IPC_STATUS_ERR_UNKNOWN_DEV      0x10
+#define IPC_STATUS_ERR_UNKNOWN_CMD      0x11
+#define IPC_STATUS_ERR_DEV_TIMEOUT      0x12
+// Scheduling layer (daemon-internal)
+#define IPC_STATUS_ERR_DEADLINE         0x20
+#define IPC_STATUS_ERR_QUEUE_FULL       0x21
+// Session layer
+#define IPC_STATUS_ERR_INVALID_CLIENT   0x30
+#define IPC_STATUS_ERR_SLOT_FULL        0x31
 
 // Scheduling policies
 #define POLICY_FIFO 0x01

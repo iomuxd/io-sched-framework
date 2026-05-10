@@ -47,6 +47,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    sched_set_response_sink(&sched, ch_response_sink, &ch);
+
     while (g_running) {
         if (ch_poll(&ch) < 0)
             break;

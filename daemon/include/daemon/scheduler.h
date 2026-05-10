@@ -6,6 +6,14 @@
 #include <daemon/request_queue.h>
 #include <daemon/serial.h>
 
+/* Response sink — adapter callback for delivering IO_RESPONSE to clients */
+typedef void (*response_sink_t)(void           *ctx,
+                                uint8_t        cid,
+                                uint32_t       req_id,
+                                uint8_t        status,
+                                const uint8_t *payload,
+                                uint16_t       payl_len);
+
 /* Scheduling policy vtable — set once at daemon startup, immutable thereafter */
 typedef struct {
     uint8_t id;
@@ -23,6 +31,8 @@ typedef struct {
     serial_ctx_t     *serial;
     uint32_t          total_reqs;
     uint64_t          total_wait_us;
+    response_sink_t   sink;
+    void             *sink_ctx;
 } scheduler_t;
 
 /* Lifecycle */
@@ -33,5 +43,8 @@ void sched_destroy(scheduler_t *sched);
 /* Operations */
 int  sched_submit(scheduler_t *sched, io_request_t *req);
 int  sched_dispatch(scheduler_t *sched);
+
+/* Wiring — register sink after both sched and ch are initialized */
+void sched_set_response_sink(scheduler_t *sched, response_sink_t sink, void *ctx);
 
 #endif /* SCHEDULER_H */
