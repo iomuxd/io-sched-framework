@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 
 #define DEFAULT_TIMEOUT_MS 1000
@@ -85,18 +86,52 @@ int sched_dispatch(scheduler_t *sched) {
     if (node == NULL)
         return 1;
 
+    if (node->req->deadline_ms != 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed_ms = (now.tv_sec  - node->req->arrive_ts.tv_sec)  * 1000L
+                        + (now.tv_nsec - node->req->arrive_ts.tv_nsec) / 1000000L;
+        if (elapsed_ms > (long)node->req->deadline_ms) {
+            rq_remove(&sched->queue, node);
+            if (sched->sink) {
+                sched->sink(sched->sink_ctx,
+                            node->req->cid,
+                            node->req->req_id,
+                            IPC_STATUS_ERR_DEADLINE,
+                            NULL,
+                            0);
+            }
+            free(node->req);
+            free(node);
+            return 0;
+        }
+    }
+
     uart_frame_t frame = build_frame(node->req);
     uint32_t dl = node->req->deadline_ms > 0 ? node->req->deadline_ms : DEFAULT_TIMEOUT_MS;
     int timeout = dl > (uint32_t)INT_MAX ? INT_MAX : (int)dl;
+    bool    ok     = false;
+    uint8_t status = IPC_STATUS_ERR_DEV_TIMEOUT;
 
-    if (serial_send(sched->serial, &frame) < 0) {
-        rq_remove(&sched->queue, node);
-        free(node->req);
-        free(node);
-        return -1;
+    for (int i = 0; i < 3; i++) {
+        if (serial_send(sched->serial, &frame) >= 0 &&
+            serial_recv(sched->serial, &frame, timeout) >= 0) {
+            ok     = true;
+            status = uart_to_ipc_status(frame.cmd);
+            break;
+        }
     }
-    if (serial_recv(sched->serial, &frame, timeout) < 0) {
+
+    if (!ok) {
         rq_remove(&sched->queue, node);
+        if (sched->sink) {
+            sched->sink(sched->sink_ctx,
+                        node->req->cid,
+                        node->req->req_id,
+                        IPC_STATUS_ERR_DEV_TIMEOUT,
+                        NULL,
+                        0);
+        }
         free(node->req);
         free(node);
         return -1;
@@ -106,7 +141,7 @@ int sched_dispatch(scheduler_t *sched) {
         sched->sink(sched->sink_ctx,
                     node->req->cid,
                     node->req->req_id,
-                    uart_to_ipc_status(frame.cmd),
+                    status,
                     (const uint8_t *)&frame.payload,
                     2);
     }
