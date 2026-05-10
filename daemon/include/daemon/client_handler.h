@@ -38,4 +38,11 @@ int  ch_handle_message(client_handler_t *ch, int idx);
 /* Event loop */
 int  ch_poll(client_handler_t *ch);
 
+/* Client lookup */
+int  ch_find_by_cid(const client_handler_t *ch, uint8_t cid);
+
+/* Response delivery — adapter conforming to response_sink_t */
+void ch_response_sink(void *ctx, uint8_t cid, uint32_t req_id,
+                      uint8_t status, const uint8_t *payload, uint16_t payl_len);
+
 #endif /* CLIENT_HANDLER_H */

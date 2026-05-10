@@ -1,4 +1,6 @@
 #include <poll.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 #include <errno.h>
 #include <string.h>
@@ -274,4 +276,40 @@ int ch_poll(client_handler_t *ch) {
     }
 
     return n;
+}
+
+/* Client lookup */
+int ch_find_by_cid(const client_handler_t *ch, uint8_t cid) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (ch->clients[i].fd != -1 && ch->clients[i].cid == cid) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void ch_response_sink(void *ctx, uint8_t cid, uint32_t req_id, uint8_t status, const uint8_t *payload, uint16_t payl_len) {
+    client_handler_t *ch = ctx;
+
+    int idx = ch_find_by_cid(ch, cid);
+    if (idx == -1) {
+        fprintf(stderr, "ch_response_sink: cid=%u not connected, dropping response\n", cid);        
+        return;
+    }
+
+    uint8_t buf[sizeof(ipc_io_response_t) + 2];
+    ipc_io_response_t *resp = (ipc_io_response_t *)buf;
+    resp->header.type = IPC_IO_RESPONSE;
+    resp->header.cid  = cid;
+    resp->header.len  = sizeof(ipc_io_response_t) + payl_len;
+    resp->req_id      = req_id;
+    resp->status      = status;
+    resp->payl_len    = payl_len;
+
+    if (payl_len > 0)
+        memcpy(resp->payload, payload, payl_len);
+
+    int fd = ch->clients[idx].fd;
+
+    write_all(fd, buf, resp->header.len);
 }

@@ -1,6 +1,6 @@
 # 앱 ↔ 데몬 IPC 프로토콜 명세서
 
-> **문서 버전**: v0.2
+> **문서 버전**: v0.3
 > **통신 채널**: Unix 도메인 소켓 (SOCK_STREAM)
 > **대상 환경**: Raspberry Pi OS (Linux)
 
@@ -196,7 +196,7 @@ CLIENT_ID만으로는 숫자라서 사람이 읽기 어렵다.
 | LEN | 0 | 2B | 5 (고정) |
 | TYPE | 2 | 1B | `0x02` |
 | CID | 3 | 1B | 부여된 클라이언트 ID (1~255) |
-| STATUS | 4 | 1B | `0x00`=성공, `0xFF`=연결 거부 (슬롯 부족) |
+| STATUS | 4 | 1B | IPC STATUS 코드 (§5.6 참조). `0x00` OK = 성공, `0x31` ERR_SLOT_FULL = 슬롯 부족으로 연결 거부 |
 
 
 ### 5.4 DISCONNECT (0x03)
@@ -305,17 +305,32 @@ I/O 요청에 대한 응답이다.
 | PAYL_LEN | 9 | 2B | 페이로드 길이 |
 | PAYLOAD | 11 | 가변 | 응답 데이터 (센서 값 등) |
 
-**STATUS 코드**:
+**STATUS 코드** (IPC 전체 공용 namespace):
 
-| 코드 | 이름 | 설명 |
-|------|------|------|
-| `0x00` | `OK` | 성공 |
-| `0x01` | `ERR_UNKNOWN_DEV` | 존재하지 않는 디바이스 |
-| `0x02` | `ERR_UNKNOWN_CMD` | 지원하지 않는 명령 |
-| `0x03` | `ERR_DEADLINE` | 데드라인 초과 (큐에서 대기 중 만료) |
-| `0x04` | `ERR_DEV_TIMEOUT` | 아두이노 디바이스 응답 없음 |
-| `0x05` | `ERR_QUEUE_FULL` | 데몬 큐 포화 |
-| `0x06` | `ERR_INVALID_CLIENT` | 유효하지 않은 CLIENT_ID |
+본 표는 IO_RESPONSE 뿐 아니라 CONNECT_ACK 의 STATUS 필드도 포함하는 IPC 단일 코드 공간이다.
+의미 그룹별로 상위 니블 prefix 를 분리하여, 클라이언트가 코드만 보고도 어느 계층의 책임인지 즉시 식별할 수 있게 한다.
+
+| 코드 | 이름 | 그룹 | 출처 | 사용 메시지 |
+|------|------|------|------|------------|
+| `0x00` | `OK` | 공통 성공 | — | CONNECT_ACK, IO_RESPONSE |
+| `0x10` | `ERR_UNKNOWN_DEV` | 디바이스 계층 | UART → 변환 | IO_RESPONSE |
+| `0x11` | `ERR_UNKNOWN_CMD` | 디바이스 계층 | UART → 변환 | IO_RESPONSE |
+| `0x12` | `ERR_DEV_TIMEOUT` | 디바이스 계층 | UART (재시도 3회 실패; UART `ERR_CRC` 도 흡수) | IO_RESPONSE |
+| `0x20` | `ERR_DEADLINE` | 스케줄링 계층 | 데몬 (큐 대기 중 만료) | IO_RESPONSE |
+| `0x21` | `ERR_QUEUE_FULL` | 스케줄링 계층 | 데몬 (큐 포화) | IO_RESPONSE |
+| `0x30` | `ERR_INVALID_CLIENT` | 세션 계층 | 데몬 (알 수 없는 CID) | IO_RESPONSE |
+| `0x31` | `ERR_SLOT_FULL` | 세션 계층 | 데몬 (클라이언트 슬롯 부족) | CONNECT_ACK |
+
+**그룹 prefix 규칙**:
+
+| Prefix | 그룹 | 의미 |
+|--------|------|------|
+| `0x0X` | 공통 | 현재는 `OK` 만 정의 |
+| `0x1X` | 디바이스 계층 | UART 응답에서 변환된 에러. 아두이노 또는 그에 연결된 센서/액추에이터 단의 문제 |
+| `0x2X` | 스케줄링 계층 | 데몬의 큐/정책에서 발생. 디바이스에 도달하지 않고 거부된 요청 |
+| `0x3X` | 세션 계층 | 클라이언트 식별·연결 관련 |
+
+**UART STATUS 와의 관계**: UART 프로토콜 (`uart-protocol-spec.md §3.4`) 의 STATUS 코드와는 **숫자 공간이 의도적으로 분리되어 있다**. 두 계층은 관심사가 다르므로 (UART 는 프레임/디바이스 단, IPC 는 추가로 큐/세션 단) 같은 숫자가 다른 의미를 가질 수 있다 — 예: UART `0x03` 은 `ERR_CRC`, IPC `0x20` 이 `ERR_DEADLINE`. 데몬은 §8.2 의 변환표에 따라 UART STATUS 를 IPC STATUS 로 명시적으로 변환해야 하며, 패스스루는 금지된다.
 
 
 ### 5.7 GET_STATUS (0x20) / STATUS_REPORT (0x21)
@@ -480,7 +495,10 @@ I/O 요청에 대한 응답이다.
 
 ## 8. 데몬 ↔ UART 매핑
 
-데몬은 IPC 메시지를 수신하면 UART 프레임으로 변환하여 아두이노에 전달한다.
+데몬은 IPC 메시지와 UART 프레임 사이의 양방향 변환을 담당한다.
+요청 방향(§8.1)은 앱 → 데몬 → 아두이노, 응답 방향(§8.2)은 그 역순이다.
+
+### 8.1 IPC IO_REQUEST → UART 요청 프레임
 
 ```
   IPC IO_REQUEST                         UART 요청 프레임
@@ -499,6 +517,57 @@ PRI, DEADLINE은 데몬 내부의 스케줄링 큐에서만 사용된다.
 아두이노는 스케줄링을 알 필요가 없다. 아두이노에게는 그냥
 "이 디바이스에서 이 명령을 실행해"라는 요청만 도착한다.
 
+### 8.2 UART 응답 프레임 → IPC IO_RESPONSE
+
+데몬은 아두이노로부터 UART 응답 프레임을 받으면 다음 규칙에 따라
+IPC IO_RESPONSE 로 변환하여 원래 요청 클라이언트에게 전달한다.
+
+```
+  UART 응답 프레임                       IPC IO_RESPONSE
+  ┌───────────────────────┐             ┌──────────────────────────┐
+  │ STATUS   ─── 변환표 ──┼────────────→│ STATUS                   │
+  │ PAYLOAD  ─────────────┼────────────→│ PAYLOAD (2B 그대로)      │
+  │                       │             │ PAYL_LEN = 2 (고정)      │
+  │ SEQ      ─── 역매핑 ──┼────────────→│ CID, REQ_ID              │
+  │ DEV      ─── 검증용 (요청과 일치 여부 확인)                   │
+  └───────────────────────┘             └──────────────────────────┘
+```
+
+**STATUS 변환표**:
+
+| UART STATUS | → IPC STATUS | 비고 |
+|-------------|-------------|------|
+| `0x00` OK | `0x00` OK | |
+| `0x01` ERR_UNKNOWN_DEV | `0x10` ERR_UNKNOWN_DEV | |
+| `0x02` ERR_UNKNOWN_CMD | `0x11` ERR_UNKNOWN_CMD | |
+| `0x03` ERR_CRC | (재시도) | 데몬이 `uart-protocol-spec.md §5.2` 에 따라 최대 3회 재전송. 재시도 모두 실패 시 `0x12` ERR_DEV_TIMEOUT 으로 변환하여 응답. 클라이언트에 그대로 노출하지 않는다 |
+| `0x04` ERR_DEV_TIMEOUT | `0x12` ERR_DEV_TIMEOUT | |
+
+**ERR_CRC 흡수의 근거**: UART CRC 실패는 전송 매체의 일시적 노이즈 가능성이 높으므로 재시도가 우선이다.
+재시도가 모두 실패한 시점에서는 "디바이스 또는 링크가 응답 불능" 이라는 의미상 `ERR_DEV_TIMEOUT` 과 동일한 상위 결과이며,
+클라이언트에게 매체 단의 CRC 실패 여부를 노출해도 별도 대응이 불가능하다.
+
+**PAYLOAD 매핑**: UART 응답 PAYLOAD 는 항상 2B 고정이므로 (`uart-protocol-spec.md §3.6`),
+IPC IO_RESPONSE 에서도 `PAYL_LEN = 2` 로 그대로 전달한다.
+페이로드 의미 해석 (READ 의 센서 값, INFO 의 디바이스 타입 코드 등) 은 클라이언트 라이브러리 (`libiosched`) 가 CMD 별로 처리한다.
+
+**REQ_ID 라우팅**: 데몬은 IPC IO_REQUEST 수신 시 `(CID, REQ_ID)` 쌍을 보존한 채 큐에 넣고,
+UART 송신 시 자체 SEQ 를 발급하면서 `SEQ → (CID, REQ_ID)` 매핑을 유지한다.
+UART 응답이 도착하면 SEQ 로 매핑을 조회하여 원래 클라이언트와 요청 ID 를 복원,
+IO_RESPONSE 의 CID, REQ_ID 필드에 채운다.
+
+**데몬 내부 발생 응답**: 다음 STATUS 코드는 UART 를 거치지 않고 데몬이 직접 생성하므로
+변환 대상이 아니다. 이 경우 `PAYL_LEN = 0` 이며 PAYLOAD 는 비어 있다.
+
+| IPC STATUS | 발생 시점 |
+|------------|----------|
+| `0x20` ERR_DEADLINE | 큐 대기 중 데드라인 만료 (디스패치 직전 검사) |
+| `0x21` ERR_QUEUE_FULL | 큐 포화로 즉시 거부 (요청 도착 시점) |
+| `0x30` ERR_INVALID_CLIENT | 알 수 없는 CID 의 요청 수신 |
+
+**DEV 검증**: 응답 프레임의 DEV 가 원래 요청의 DEV 와 일치하지 않으면 데몬은 해당 응답을 폐기하고 재시도한다.
+이는 SEQ 매핑이 어긋난 경우 (예: 늦게 도착한 이전 응답) 를 잡기 위한 이중 검증이다.
+
 ---
 
 ## 9. 설계 결정 요약
@@ -513,3 +582,4 @@ PRI, DEADLINE은 데몬 내부의 스케줄링 큐에서만 사용된다.
 | 프레임 크기 | 가변 길이 | 라즈베리파이는 메모리 여유. LEN 필드로 경계 관리 |
 | 무결성 검증 | 없음 | 커널이 보장. CRC/체크섬 불필요 |
 | 정책 변경 | 데몬 시작 시 고정 | 런타임 변경 시 큐 재정렬 문제, 다중 앱 충돌 문제 발생. 벤치마크는 재시작으로 충분 |
+| STATUS 코드 namespace | UART 와 분리, 그룹 prefix 부여 | UART 와 IPC 는 다른 계층의 다른 관심사. 숫자 일치는 의도치 않은 패스스루를 유발하여 silent 의미 충돌 (예: UART `0x03` ERR_CRC vs 구 IPC `0x03` ERR_DEADLINE) 위험. prefix 그룹화로 클라이언트는 코드만으로 책임 계층 식별 가능 |
