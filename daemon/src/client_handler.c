@@ -86,6 +86,12 @@ int ch_accept(client_handler_t *ch) {
         return -1;
 
     if (ch->client_cnt >= MAX_CLIENTS) {
+        ipc_connect_ack_t ack;
+        ack.header.type = IPC_STATUS_ERR_SLOT_FULL;
+        ack.header.cid  = 0;
+        ack.header.len  = sizeof(ack);
+        ack.status = IPC_STATUS_OK;
+        write_all(client_fd, &ack, sizeof(ack));
         close(client_fd);
         return -1;
     }
@@ -98,6 +104,12 @@ int ch_accept(client_handler_t *ch) {
         }
     }
     if (free_idx == -1) {
+        ipc_connect_ack_t ack;
+        ack.header.type = IPC_STATUS_ERR_SLOT_FULL;
+        ack.header.cid  = 0;
+        ack.header.len  = sizeof(ack);
+        ack.status = IPC_STATUS_OK;
+        write_all(client_fd, &ack, sizeof(ack));
         close(client_fd);
         return -1;
     }
